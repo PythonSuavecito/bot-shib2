@@ -1,8 +1,8 @@
-import requests
+iimport os
 from telegram import Update
 from telegram.ext import Application, CommandHandler
+import requests
 import logging
-from datetime import datetime
 
 # Configura logging
 logging.basicConfig(
@@ -10,69 +10,62 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-async def precio_shib(update: Update, context):
+TOKEN = os.getenv('TOKEN_BOT')
+
+async def precio(update: Update, context):
     try:
-        # 1. Obtener datos con triple verificación
-        def safe_api_call(url):
+        # API Bitso con manejo de errores
+        def get_data(url):
             try:
-                response = requests.get(url, timeout=5)
-                response.raise_for_status()
+                response = requests.get(url, timeout=10)
                 data = response.json()
-                if not data.get('success', False):
-                    raise ValueError("API no respondió correctamente")
-                return data['payload']
-            except Exception as e:
-                logging.error(f"Error en API call: {e}")
+                return data.get('payload') if data.get('success') else None
+            except:
                 return None
 
-        # 2. Intentar máximo 3 veces
-        max_retries = 3
-        for attempt in range(max_retries):
-            shib_data = safe_api_call("https://api.bitso.com/v3/ticker/?book=shib_usd")
-            usd_data = safe_api_call("https://api.bitso.com/v3/ticker/?book=usd_mxn")
-            
-            if shib_data and usd_data:
-                break
-            elif attempt == max_retries - 1:
-                await update.message.reply_text("🔴 Servicio no disponible. Intenta más tarde")
-                return
+        shib_data = get_data('https://api.bitso.com/v3/ticker/?book=shib_usd')
+        usd_data = get_data('https://api.bitso.com/v3/ticker/?book=usd_mxn')
 
-        # 3. Procesar datos con verificación
-        try:
-            precio_shib = float(shib_data["last"])
-            precio_usd = float(usd_data["last"])
-            cambio_24h = float(shib_data.get("change_24", 0))
-            hora_actualizacion = shib_data.get("created_at", datetime.utcnow().isoformat())
-        except KeyError as e:
-            logging.error(f"Estructura inesperada: {e}")
-            await update.message.reply_text("⚠️ Datos temporales no disponibles")
+        if not shib_data or not usd_data:
+            await update.message.reply_text("🔴 Datos no disponibles. Intenta más tarde")
             return
 
-        # 4. Formatear respuesta
-        respuesta = (
-            f"🐕 *SHIB/MXN*: ${precio_shib * precio_usd:,.8f}\n"
-            f"📈 *24h*: {cambio_24h:+.2f}%\n"
-            f"💵 *100 MXN* = {100/(precio_shib * precio_usd):,.0f} SHIB\n"
-            f"⏰ *Actualizado*: {hora_actualizacion[11:19]} UTC"
-        )
+        # Cálculos seguros
+        precio_shib = float(shib_data['last']) * float(usd_data['last'])
+        cambio = float(shib_data.get('change_24', 0))
         
-        await update.message.reply_text(respuesta, parse_mode="Markdown")
+        await update.message.reply_text(
+            f"🐕 *SHIB/MXN*: ${precio_shib:,.8f}\n"
+            f"📈 *24h*: {cambio:+.2f}%\n"
+            f"💵 *100 MXN* = {100/precio_shib:,.0f} SHIB",
+            parse_mode="Markdown"
+        )
 
     except Exception as e:
-        logging.exception("Error inesperado:")
-        await update.message.reply_text("😵 Error crítico. Notificar a mi desarrollador")
+        logging.error(f"Error: {e}")
+        await update.message.reply_text("⚠️ Error temporal. Ya lo estoy solucionando")
 
 def main():
-    application = Application.builder().token("7474550148:AAEsCI_WzlsDYxPYAMdwrEASsvUDuNFINT0").build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("precio", precio_shib))
-    application.run_polling()
+    app = Application.builder() \
+        .token(TOKEN) \
+        .concurrent_updates(True) \
+        .build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("precio", precio))
+    
+    # Webhook para Render (opcional)
+    if "RENDER" in os.environ:
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=int(os.environ.get("PORT", 10000)),
+            webhook_url=os.getenv("WEBHOOK_URL")
+        )
+    else:
+        app.run_polling()
 
 async def start(update: Update, context):
-    await update.message.reply_text(
-        "👋 Hola! Soy tu bot SHIB profesional 🐕💎\n\n"
-        "Usa /precio para ver el valor actual"
-    )
+    await update.message.reply_text("👋 ¡Bot SHIB activado! Usa /precio")
 
 if __name__ == "__main__":
     main()
