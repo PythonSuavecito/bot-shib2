@@ -1,88 +1,56 @@
-import os
 import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler
-from dotenv import load_dotenv
 import logging
-# Configura logging para ver errores
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-# Carga variables de entorno
-load_dotenv()
-TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-async def start(update: Update, context):
-    user = update.effective_user
-    await update.message.reply_html(
-        f"👋 Hola {user.mention_html()}!\n\n"
-        "Soy tu <b>bot SHIB profesional</b> 🐕💎\n\n"
-        "Usa /precio para ver el valor de SHIB"
-    )
+# Configura logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 async def precio_shib(update: Update, context):
     try:
-        # 1. Obtener datos de la API con manejo de errores
-        def get_bitso_data(pair):
-            response = requests.get(f"https://api.bitso.com/v3/ticker/?book={pair}")
+        # 1. Obtener datos con manejo de errores
+        def obtener_datos(par):
+            response = requests.get(f"https://api.bitso.com/v3/ticker/?book={par}", timeout=5)
+            response.raise_for_status()  # Lanza error si hay problemas HTTP
             data = response.json()
             if not data.get('success', False):
-                raise ValueError(f"API no respondió correctamente para {pair}")
+                raise ValueError("API no respondió correctamente")
             return data['payload']
         
-        # 2. Obtener ambos precios
-        shib_data = get_bitso_data("shib_usd")
-        usd_data = get_bitso_data("usd_mxn")
-        
-        # 3. Calcular precios
+        # 2. Obtener ambos precios con reintentos
+        try:
+            shib_data = obtener_datos("shib_usd")
+            usd_data = obtener_datos("usd_mxn")
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Error de conexión: {e}")
+            await update.message.reply_text("🔴 Problema temporal con Bitso. Intenta en 1 minuto")
+            return
+
+        # 3. Procesar datos
         precio_shib_usd = float(shib_data["last"])
         precio_usd_mxn = float(usd_data["last"])
         precio_shib_mxn = precio_shib_usd * precio_usd_mxn
-        cambio_24h = float(shib_data["change_24"])
-        
-        # 4. Formatear mensaje con emojis
-        emoji_tendencia = "📈" if cambio_24h >= 0 else "📉"
+        cambio_24h = float(shib_data.get("change_24", 0))
+
+        # 4. Formatear respuesta
+        emoji = "📈" if cambio_24h >= 0 else "📉"
         mensaje = (
-            f"{emoji_tendencia} *SHIB/MXN*: `${precio_shib_mxn:,.8f}`\n"
-            f"• *Cambio 24h*: `{cambio_24h:+.2f}%`\n"
-            f"• *Equivalencia*: `100 MXN = {100/precio_shib_mxn:,.0f} SHIB`\n"
-            f"🔄 Actualizado: {shib_data['created_at'][11:19]} UTC"
+            f"{emoji} *SHIB/MXN*: `${precio_shib_mxn:,.8f}`\n"
+            f"• *24h*: `{cambio_24h:+.2f}%`\n"
+            f"• *100 MXN* = `{100/precio_shib_mxn:,.0f} SHIB`\n"
+            f"🔄 *Actualizado*: {shib_data['created_at'][11:19]} UTC"
         )
         
         await update.message.reply_text(mensaje, parse_mode="Markdown")
-        
+
     except Exception as e:
-        logging.error(f"Error: {str(e)}")
-        await update.message.reply_text("🔴 *Error al obtener datos*:\n\n"
-                                      "Estoy teniendo problemas para conectarme con Bitso. "
-                                      "Intenta de nuevo en unos minutos.", 
-                                      parse_mode="Markdown")
+        logging.exception("Error crítico:")
+        await update.message.reply_text("⚠️ Error temporal. Estamos trabajando en ello")
 
 def main():
-    # Configuración del bot
-    app = Application.builder().token(TOKEN).build()
-    
-    # Comandos
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("precio", precio_shib))
-    
-    # Inicia el bot
-    app.run_polling()
+    application = Application.builder().token("7474550148:AAEsCI_WzlsDYxPYAMdwrEASsvUDuNFINT0").build()
+    application.add_handler(CommandHandler("precio", precio_shib))
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
-
-
-    from fastapi import FastAPI
-import uvicorn
-
-# Crea servidor web para Render
-web_app = FastAPI()
-
-@web_app.get("/")
-def home():
-    return {"status": "Bot SHIB activo"}
-
-if __name__ == "__main__":
-    # Inicia el bot y el servidor web
-    import threading
-    threading.Thread(target=lambda: uvicorn.run(web_app, host="0.0.0.0", port=10000)).start()
-    main()  # Tu función principal del bot
