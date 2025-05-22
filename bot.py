@@ -4,7 +4,7 @@ from telegram.ext import Application, CommandHandler
 import requests
 import logging
 
-# Configura logging
+# Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -14,24 +14,25 @@ TOKEN = os.getenv('TOKEN_BOT')
 
 async def precio(update: Update, context):
     try:
-        # API Bitso con manejo de errores
+        # API Bitso with error handling
         def get_data(url):
             try:
                 response = requests.get(url, timeout=10)
+                response.raise_for_status()
                 data = response.json()
                 return data.get('payload') if data.get('success') else None
             except Exception as e:
-                logging.error(f"Error en API call: {e}")
+                logging.error(f"API call error: {e}")
                 return None
 
         shib_data = get_data('https://api.bitso.com/v3/ticker/?book=shib_usd')
         usd_data = get_data('https://api.bitso.com/v3/ticker/?book=usd_mxn')
 
         if not shib_data or not usd_data:
-            await update.message.reply_text("🔴 Datos no disponibles. Intenta más tarde")
+            await update.message.reply_text("🔴 Data not available. Try again later")
             return
 
-        # Cálculos seguros
+        # Safe calculations
         precio_shib = float(shib_data['last']) * float(usd_data['last'])
         cambio = float(shib_data.get('change_24', 0))
         
@@ -43,11 +44,11 @@ async def precio(update: Update, context):
         )
 
     except Exception as e:
-        logging.error(f"Error: {e}")
-        await update.message.reply_text("⚠️ Error temporal. Ya lo estoy solucionando")
+        logging.error(f"Error: {e}", exc_info=True)
+        await update.message.reply_text("⚠️ Temporary error. Working on it")
 
 async def start(update: Update, context):
-    await update.message.reply_text("👋 ¡Bot SHIB activado! Usa /precio")
+    await update.message.reply_text("👋 SHIB bot activated! Use /precio")
 
 def main():
     app = Application.builder() \
@@ -58,18 +59,18 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("precio", precio))
     
-    # Configuración para Render/Producción
-    if os.getenv('RENDER'):
-        WEBHOOK_URL = os.getenv('WEBHOOK_URL', '').replace('http://', 'https://')
+    # Production configuration for Render
+    if os.getenv('ENV') == 'production':
+        WEBHOOK_URL = os.getenv('WEBHOOK_URL').replace('http://', 'https://')
         app.run_webhook(
             listen="0.0.0.0",
-           port=int(os.getenv("PORT", 10000)),  # → port=10000
+            port=10000,  # Fixed port for Render
             webhook_url=WEBHOOK_URL,
-            secret_token=os.getenv('SECRET_TOKEN', 'DEFAULT_SECRET'),
+            secret_token=os.getenv('SECRET_TOKEN'),
             drop_pending_updates=True
         )
     else:
-        # Modo desarrollo con polling
+        # Development mode with polling
         app.run_polling()
 
 if __name__ == "__main__":
