@@ -63,7 +63,7 @@ def main():
         WEBHOOK_URL = os.getenv('WEBHOOK_URL', '').replace('http://', 'https://')
         app.run_webhook(
             listen="0.0.0.0",
-            port=int(os.getenv("PORT", 10000)),
+           port=int(os.getenv("PORT", 10000)),  # → port=10000
             webhook_url=WEBHOOK_URL,
             secret_token=os.getenv('SECRET_TOKEN', 'DEFAULT_SECRET'),
             drop_pending_updates=True
