@@ -2,46 +2,222 @@ import os
 import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler
-from dotenv import load_dotenv
+import threading
+import logging
+from statistics import mean
+from datetime import datetime
 
-# Carga variables de entorno
-load_dotenv()
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+# Configuración de logging profesional
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler('shib_bot.log'),
+        logging.StreamHandler()
+    ]
+)
 
-async def start(update: Update, context):
-    user = update.effective_user
-    await update.message.reply_html(
-        f"👋 Hola {user.mention_html()}!\n\n"
-        "Soy tu <b>bot SHIB profesional</b> 🐕💎\n\n"
-        "Usa /precio para ver el valor de SHIB"
-    )
+# Constantes configurables
+MAX_HISTORIAL = 15  # Aumentado para mejor análisis
+TIMEOUT_API = 8     # Tiempo de espera para APIs
+HEALTH_CHECK_MIN = 3 # Minutos entre health checks
 
-async def precio_shib(update: Update, context):
-    try:
-        response = requests.get("https://api.bitso.com/v3/ticker/?book=shib_mxn")
-        data = response.json()
-        precio = float(data["payload"]["last"])
-        
-        # Gráfico emoji dinámico
-        tendencia = "📈" if precio > 0.00029 else "📉"
-        await update.message.reply_text(
-            f"{tendencia} <b>SHIB/MXN:</b> ${precio:,.8f}\n"
-            f"🤑 <i>Con $100 puedes comprar: {100/precio:,.0f} SHIB</i>",
-            parse_mode="HTML"
+# Variables globales seguras
+historial_precios = []
+token = os.getenv('TOKEN_BOT')
+
+class ShibTradingBot:
+    def __init__(self):
+        self.last_update = datetime.now()
+        self.health_check_active = False
+
+    async def start(self, update: Update, context):
+        """Maneja el comando /start con un menú interactivo"""
+        welcome_msg = (
+            "👋 *Bienvenido al SHIB Trading Bot*\n\n"
+            "📊 *Comandos disponibles:*\n"
+            "/precio - Muestra gráfico y análisis\n"
+            "/estrategia - Recomendación de trading\n"
+            "/ayuda - Muestra esta ayuda\n\n"
+            "🔔 Usa /estrategia para recibir señales automáticas"
         )
-    except Exception as e:
-        await update.message.reply_text(f"🚨 Error: {str(e)}")
+        await update.message.reply_text(welcome_msg, parse_mode="Markdown")
+
+    async def get_shib_data(self):
+        """Obtiene datos de SHIB de Bitso con manejo robusto de errores"""
+        endpoints = [
+            "https://api.bitso.com/v3/ticker/?book=shib_usd",
+            "https://api.bitso.com/v3/ticker/?book=usd_mxn"
+        ]
+        
+        try:
+            responses = []
+            for url in endpoints:
+                response = requests.get(url, timeout=TIMEOUT_API)
+                response.raise_for_status()
+                data = response.json()
+                if not data.get('success'):
+                    raise ValueError(f"API no respondió correctamente: {url}")
+                responses.append(data)
+            
+            return {
+                'shib_usd': responses[0]['payload'],
+                'usd_mxn': responses[1]['payload'],
+                'timestamp': datetime.now().isoformat()
+            }
+        except Exception as e:
+            logging.error(f"Error al obtener datos: {str(e)}", exc_info=True)
+            return None
+
+    async def precio_shib(self, update: Update, context):
+        """Muestra el precio actual con gráfico de tendencia"""
+        try:
+            data = await self.get_shib_data()
+            if not data:
+                await update.message.reply_text("⚠️ Error temporal con la API Bitso")
+                return
+
+            precio = float(data['shib_usd']['last']) * float(data['usd_mxn']['last'])
+            cambio_24h = float(data['shib_usd'].get('change_24', 0))
+            
+            # Actualizar historial de precios
+            historial_precios.append(precio)
+            if len(historial_precios) > MAX_HISTORIAL:
+                historial_precios.pop(0)
+            
+            # Generar gráfico de tendencia
+            grafico = self.generar_grafico_tendencia(precio, cambio_24h)
+            
+            respuesta = (
+                f"📈 *SHIB/MXN: ${precio:,.8f}*\n"
+                f"🔄 24h: {cambio_24h:+.2f}%\n"
+                f"📊 Tendencia:\n{grafico}\n"
+                f"🕒 Actualizado: {datetime.now().strftime('%H:%M:%S')}"
+            )
+            
+            await update.message.reply_text(respuesta, parse_mode="Markdown")
+            
+        except Exception as e:
+            logging.error(f"Error en precio_shib: {str(e)}", exc_info=True)
+            await update.message.reply_text("❌ Error al procesar tu solicitud")
+
+    def generar_grafico_tendencia(self, precio_actual, cambio_24h):
+        """Genera un gráfico ASCII basado en el historial"""
+        if not historial_precios:
+            return "📊 Recolectando datos..."
+            
+        min_p = min(historial_precios)
+        max_p = max(historial_precios)
+        rango = max_p - min_p if max_p != min_p else 0.000001
+        
+        grafico = ""
+        for precio in historial_precios[-10:]:  # Mostrar últimos 10 puntos
+            proporcion = (precio - min_p) / rango
+            barra = "🟢" * int(proporcion * 10) + "🔴" * (10 - int(proporcion * 10))
+            grafico += f"{barra} ${precio:,.8f}\n"
+        
+        return grafico
+
+    async def estrategia_trading(self, update: Update, context):
+        """Proporciona recomendaciones de trading basadas en análisis técnico"""
+        try:
+            data = await self.get_shib_data()
+            if not data or len(historial_precios) < 5:
+                await update.message.reply_text("📊 Recolectando datos...")
+                return
+
+            precio = float(data['shib_usd']['last']) * float(data['usd_mxn']['last'])
+            high = float(data['shib_usd']['high']) * float(data['usd_mxn']['last'])
+            low = float(data['shib_usd']['low']) * float(data['usd_mxn']['last'])
+            cambio = float(data['shib_usd'].get('change_24', 0))
+            
+            # Análisis técnico
+            mm5 = mean(historial_precios[-5:])
+            mm10 = mean(historial_precios[-10:]) if len(historial_precios) >= 10 else mm5
+            volatilidad = ((high - low) / precio) * 100
+            
+            # Lógica de trading
+            if precio < mm5 * 0.997 and mm5 > mm10:
+                accion = "✅ COMPRAR (Retroceso confirmado)"
+                sl = precio * 0.994
+                tp = precio * 1.006
+            elif precio > mm5 * 1.003 and mm5 < mm10:
+                accion = "💰 VENDER (Sobrecompra detectada)"
+                sl = precio * 1.006
+                tp = precio * 0.994
+            else:
+                accion = "🔄 ESPERAR (Sin señal clara)"
+                sl = tp = None
+            
+            # Construir respuesta
+            respuesta = (
+                f"🎯 *Estrategia SHIB/MXN*\n\n"
+                f"📊 Precio: ${precio:,.8f}\n"
+                f"📈 MM5: ${mm5:,.8f}\n"
+                f"📉 MM10: ${mm10:,.8f}\n"
+                f"🌪 Volatilidad: {volatilidad:.2f}%\n\n"
+                f"💡 *Recomendación:* {accion}"
+            )
+            
+            if sl and tp:
+                respuesta += (
+                    f"\n\n⚡ *Gestión de Riesgo*\n"
+                    f"🛑 Stop-loss: ${sl:,.8f}\n"
+                    f"🎯 Take-profit: ${tp:,.8f}"
+                )
+            
+            await update.message.reply_text(respuesta, parse_mode="Markdown")
+            
+        except Exception as e:
+            logging.error(f"Error en estrategia: {str(e)}", exc_info=True)
+            await update.message.reply_text("⚠️ Error en el análisis")
+
+    def health_check(self):
+        """Mantiene activo el servicio en Render"""
+        try:
+            if os.getenv('RENDER'):
+                requests.get(os.getenv('WEBHOOK_URL'), timeout=5)
+                self.health_check_active = True
+        except Exception as e:
+            logging.warning(f"Health check failed: {e}")
+            self.health_check_active = False
+        finally:
+            threading.Timer(HEALTH_CHECK_MIN * 60, self.health_check).start()
 
 def main():
-    # Configuración del bot
-    app = Application.builder().token(TOKEN).build()
+    # Validación de seguridad
+    if not token:
+        logging.critical("Token no configurado. Verifica TOKEN_BOT")
+        return
+
+    # Inicializar bot
+    bot = ShibTradingBot()
+    app = Application.builder().token(token).build()
     
-    # Comandos
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("precio", precio_shib))
+    # Registrar comandos
+    app.add_handler(CommandHandler("start", bot.start))
+    app.add_handler(CommandHandler("precio", bot.precio_shib))
+    app.add_handler(CommandHandler("estrategia", bot.estrategia_trading))
+    app.add_handler(CommandHandler("ayuda", bot.start))  # Alias para /start
     
-    # Inicia el bot
-    app.run_polling()
+    # Iniciar health check
+    if os.getenv('RENDER'):
+        bot.health_check()
+        logging.info("Modo webhook activado")
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=10000,
+            webhook_url=os.getenv('WEBHOOK_URL'),
+            secret_token=os.getenv('SECRET_TOKEN'),
+            drop_pending_updates=True
+        )
+    else:
+        logging.info("Modo polling activado")
+        app.run_polling(
+            poll_interval=2,
+            timeout=15,
+            drop_pending_updates=True
+        )
 
 if __name__ == "__main__":
     main()
