@@ -242,6 +242,7 @@ def main():
             poll_interval=2,
             timeout=15,
             drop_pending_updates=True
+            allowed_updates=Update.ALL_TYPES
         )
 
 if __name__ == "__main__":
